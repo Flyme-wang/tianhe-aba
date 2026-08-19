@@ -1,0 +1,16 @@
+{
+  "name": "tianhe-aba",
+  "repo": "Flyme-wang/qoder-skills",
+  "path": "tianhe-aba/SKILL.md",
+  "source": "github.com/Flyme-wang/qoder-skills",
+  "downloaded_at": "2026-08-19T00:00:00.000000Z",
+  "dir_name": "tianhe-aba",
+  "category": "scientific-computing",
+  "author": "Flyme-wang",
+  "source_url": "https://github.com/Flyme-wang/qoder-skills/tree/main/tianhe-aba",
+  "license": "MIT",
+  "copyright": "Copyright (c) 2026 Flyme-wang",
+  "permission_note": "Original skill authored by the repository owner; freely usable.",
+  "distribution": "public",
+  "license_class": "permissive"
+}
