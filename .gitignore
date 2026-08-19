@@ -1,0 +1,3 @@
+# 日志文件不入库
+sync_log.txt
+*.log
