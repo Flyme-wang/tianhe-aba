@@ -115,6 +115,7 @@ msg=..._${suf}.msg; grep -cE '\*\*\*ERROR|TOO MANY ATTEMPTS'  # 3. 错误扫描
 | `SOLUTION APPEARS TO BE DIVERGING` | 物理发散（如 leakoff 降+高渗地层振荡） | stabilize 0.0002→0.001；仍发散则参数组合物理失稳 |
 | `TIME INTEGRATION ACCURACY TOLERANCE EXCEEDED` | 孔压变化率超限 | allsdtol 0.05→0.2；再失败则 utol 上限调松 |
 | 大量 NEGATIVE EIGENVALUE（>100） | 单元完全损伤/刚度奇异 | 起裂瞬态伴随现象，配合上面修复 |
+| 负特征值暴增（200+/步）+ 失败时刻对 min inc/stabilize 鲁棒 | 弱化层整层同时软化（snap-through），非时间积分问题 | cohesive 粘性正则化：新建 *Section Controls viscosity 0.05→0.5 只指向弱化层截面 |
 
 ## 收敛性修复参数矩阵（2026-08 实证）
 
@@ -125,6 +126,7 @@ msg=..._${suf}.msg; grep -cE '\*\*\*ERROR|TOO MANY ATTEMPTS'  # 3. 错误扫描
 | stabilize | 0.0002 | 0.001 | 阻尼抑制发散（单独不足，须配 min inc） |
 | allsdtol | 0.05 | 0.2 | 放宽孔压变化率容差 |
 | utol | 9e8 | 5e7~1e8 | 收紧容差下限（<5e7 起裂瞬态必挂） |
+| cohesive viscosity（*Section Controls） | 0.05 | 0.5（仅弱化层截面） | 弱化层整层软化时渐进损伤；垂直缝 controls 保持 0.05 不污染其行为 |
 
 **修复原则**：敏感性变量（Leakoff/utol/渗透率/流量）保持不变，仅加数值稳定参数，不污染对比结论；每轮只试 1-2 个组合，用 .sta 推进距离判断效果（v1 死 103s → v3 死 120s = 进步）。
 
@@ -138,8 +140,13 @@ msg=..._${suf}.msg; grep -cE '\*\*\*ERROR|TOO MANY ATTEMPTS'  # 3. 错误扫描
 | utol1e7 v1 | utol=1e7 | 死 103s：ACCURACY TOLERANCE EXCEEDED |
 | utol5e7 v3 | +stabilize 0.001 | 仍死 103s |
 | utol1e8 v4 | +allsdtol 0.2+min 1e-12+stab 0.001 | 死 120s：仍超容差，utol<5e7 物理不可行 |
+| hweak v1 | 水平层 QUADS ×0.2/BK ×0.1（促水平面破裂） | 死 185s：22 负特征值/步，水平层起裂即发散 |
+| hweak v2 | +min 1e-12+stab 0.001+allsdtol 0.2 | 仍死 185s：负特征值暴涨 265/步，纯数值参数无效 |
+| hweak v3 | +水平层 *Section Controls viscosity 0.05→0.5 | 验证粘性正则化能否渐进化整层软化（垂直缝 controls 不动） |
 
 结论：**起裂瞬态（t≈100~120s）是数值墙**——低 Leakoff 与高渗地层组合产生物理振荡发散；utol 收紧存在 ~5e7 Pa 物理下限。遇此情况向用户提供：接受为敏感性边界 / 延长平滑升载（Smooth300→600）/ 继续调数值参数 三选项。
+
+**hweak 系列新经验（水平层弱化）**：基准模型水平层 SDEG=0 永不张开；QUADS ×0.2 弱化后 t≈185s 水平层开始破裂（物理机制：垂直缝流体压力传至水平层→有效垂向应力转拉→低强度整层同时起裂）但模型立即发散。诊断要点：**两组不同数值设置死在完全相同时刻 + 负特征值数量暴涨（22→265/步）= 整层同时软化 snap-through，不是时间积分问题**，min inc/stabilize 均无效；修复方向是粘性正则化让损伤渐进发生。
 
 ## cohesive 破裂检查（tianhe_check_hplanes.py 模式）
 
@@ -171,6 +178,7 @@ msg=..._${suf}.msg; grep -cE '\*\*\*ERROR|TOO MANY ATTEMPTS'  # 3. 错误扫描
 | 起裂瞬态硬瓶颈是 min increment=1e-8 | stabilize=0.001 单独不足以过 t≈103~113s（leak1e12_v2/utol5e7_v3 仍死于此，增量耗尽到 1e-8）。必须同时放开最小增量 1e-8→1e-12 + 初始增量 0.1→0.01，给瞬态足够空间后自动恢复满步长 |
 | sed 锚点 ^...$ 匹配失败 | INP 可能 CRLF 行尾，`^0.1, 3600., 1e-08, 2.5,$` 不匹配；改用无锚点 `s/0.1, 3600., 1e-08, 2.5,/0.01, 3600., 1e-12, 2.5,/` 并 grep 验证 |
 | 泄漏导致裂缝不扩展 | 降低地层渗透率/Leakoff，或增大 Cflow（详见敏感性 sed 表） |
+| 弱化水平层后 t≈185s 整层同时软化发散 | 负特征值 200+/步且对 min inc/stabilize 鲁棒 = snap-through。新建 `*Section Controls, name=..., viscosity=0.5`：`sed -i '179347a\*Section Controls, name=VISCO_COH_H_WEAK, viscosity=0.5'` 行号插入定义，再用 material 名唯一定位 H 截面替换 controls（H 用 MAT_COHESIVE_HORIZONTAL_*，XZ 用 MAT_COHESIVE_XZ，sed 模式互不误伤） |
 | 登录节点无 abaqus 命令 | PATH 无 abaqus → 用 `$HOME/bin/abaqus2024 python` 调 ODB 分析，禁止裸 `abaqus python` |
 | 后台分析疑似未启动 | `ps aux | grep 脚本名` 确认存活；nohup 日志第一行应为 `== open`，60GB ODB 打开需 3~8 分钟 |
 | 提交时禁止 kill 其他任务 | 仅用户明确指定才终止 |
