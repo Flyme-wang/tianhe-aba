@@ -59,6 +59,7 @@ squeue -u apm_zcshen_5
 - 步: `*Soils, consolidation, end=PERIOD, utol=9e+08, stabilize=0.0002, allsdtol=0.05`；时间行 `0.1, 3600., 1e-08, 2.5`（初始 0.1s, 总 3600s, 最小 1e-8, **最大 2.5s**）
 - 注入: `*Cflow, amplitude=Inject_Smooth300` → `GREGION_INJECTION_COH_MID_NATIVE, , -0.0444444`（9 节点集合，SMOOTH STEP 300s 升载）
 - 内聚材料: QUADS 损伤起始 `1e7, 1.4e7, 1.4e7` Pa；BK 断裂能 `50000,150000,150000` J/m²；TRACTION 弹性 `4e10, 1.66667e10`；Density 2100
+- 水平内聚层: z=4/21 的 H_Z4/H_Z21 用独立材料 `MAT_COHESIVE_HORIZONTAL_DIAG`（参数同 XZ）+ 独立截面 `elset=CELL_COHESIVE_H_Z4/Z21`；全部内聚截面共用 `*Section Controls, name=VISCO_COH3D8P_REF, viscosity=0.05`（弱化水平层只动该材料/截面，XZ 不误伤）
 - 泄漏: `*Fluid Leakoff` `5.879e-10, 5.879e-10`；`*Gap Flow` 黏度 `0.001`
 - 地层(M1~M5): E≈15 GPa, ν≈0.084, 渗透率 5.6e-7~7.6e-7 m/s（高渗），上覆低渗层 1.7e-9~7.7e-9
 - 初始地应力: S11=-79 / S22=-65 / S33=-70 MPa，孔压 30 MPa，孔隙比 0.11
@@ -72,6 +73,7 @@ squeue -u apm_zcshen_5
 | 内聚面 Leakoff | `sed -i 's/5.879e-10/1e-12/g'` | 2 处（XZ+HORIZONTAL_DIAG） |
 | 注入流量 | `sed -i 's/-0.0444444/-0.15/'` | 1 处 Cflow |
 | 孔压容差 utol | `sed -i 's/utol=9e+08/utol=1e+06/'` | 1 处 *Soils |
+| 水平层弱化（hweak 方案1） | 新建材料 `MAT_COHESIVE_HORIZONTAL_WEAK`（QUADS `2e+06, 2.8e+06, 2.8e+06`=×0.2、BK `5000.,15000.,15000.`=×0.1，弹性/密度/Leakoff/GapFlow 继承）+ `sed -i 's/elset=CELL_COHESIVE_H_Z4, material=MAT_COHESIVE_HORIZONTAL_DIAG/elset=CELL_COHESIVE_H_Z4, material=MAT_COHESIVE_HORIZONTAL_WEAK/'`（H_Z21 同模式） | 2 处截面引用 |
 
 ## ODB 提取要点（tianhe_run_probe.sh 模式）
 
@@ -148,6 +150,16 @@ msg=..._${suf}.msg; grep -cE '\*\*\*ERROR|TOO MANY ATTEMPTS'  # 3. 错误扫描
 
 **hweak 系列新经验（水平层弱化）**：基准模型水平层 SDEG=0 永不张开；QUADS ×0.2 弱化后 t≈185s 水平层开始破裂（物理机制：垂直缝流体压力传至水平层→有效垂向应力转拉→低强度整层同时起裂）但模型立即发散。诊断要点：**两组不同数值设置死在完全相同时刻 + 负特征值数量暴涨（22→265/步）= 整层同时软化 snap-through，不是时间积分问题**，min inc/stabilize 均无效；修复方向是粘性正则化让损伤渐进发生。
 
+## 水平层弱化实施流程（hweak 模式，submit_hweak.sh 已验证）
+
+目标：让 H_Z4/H_Z21 水平面破裂。基准模型水平层 SDEG=0 永不张开（需缝压 > S33 70MPa + 抗拉 7~14MPa ≈ 77~84MPa，当前缝压远低于此）。
+
+1. **探测**（probe_inp_sets.sh）：`grep -n 'Elset.*H_Z4\|Elset.*H_Z21'` + `grep -n 'Material.*HORIZONTAL\|Material.*XZ'` + `grep -n 'Cohesive.*H_Z'` 确认水平层有独立 set/材料/截面
+2. **插入新材料块**（sed 多行插入易错 → split+append）：`sed -n '1,179360p' in > p1` → `cat >> p1 << 'MATEOF'`（新 *Material 块：*Damage Initiation QUADS / *Damage Evolution BK / *Density / *Elastic TRACTION / *Fluid Leakoff / *Gap Flow）`MATEOF` → `sed -n '179361,$p' in > p2` → `cat p1 p2 > out; rm p1 p2`
+3. **改截面引用**：`sed -i 's/elset=CELL_COHESIVE_H_Z4, material=MAT_COHESIVE_HORIZONTAL_DIAG/elset=CELL_COHESIVE_H_Z4, material=MAT_COHESIVE_HORIZONTAL_WEAK/'`（Z21 同模式）
+4. **验证**：`grep -c MAT_COHESIVE_HORIZONTAL_WEAK` 应 =3（1 定义 + 2 引用）；`grep 'Cohesive.*XZ'` 确认垂直缝未动
+5. **提交 + 观测**：弱化后失败点从基准 120s 推迟到 185s = 水平层开始响应；再套收敛修复矩阵
+
 ## cohesive 破裂检查（tianhe_check_hplanes.py 模式）
 
 检查成功模型的裂缝破裂情况（尤其两个水平面是否破裂）：
@@ -177,8 +189,19 @@ msg=..._${suf}.msg; grep -cE '\*\*\*ERROR|TOO MANY ATTEMPTS'  # 3. 错误扫描
 | 起裂瞬态不收敛（t≈100~120s） | 全部失败模型都卡在裂缝起裂窗口：leakoff 降低→发散+需 <1e-8 增量（300 负特征值）；utol 收紧→TIME INTEGRATION ACCURACY TOLERANCE EXCEEDED。修复：leak1e12 加 stabilize=0.001；utol1e7 放宽 allsdtol=0.05→0.2，均保持敏感性变量不变 |
 | 起裂瞬态硬瓶颈是 min increment=1e-8 | stabilize=0.001 单独不足以过 t≈103~113s（leak1e12_v2/utol5e7_v3 仍死于此，增量耗尽到 1e-8）。必须同时放开最小增量 1e-8→1e-12 + 初始增量 0.1→0.01，给瞬态足够空间后自动恢复满步长 |
 | sed 锚点 ^...$ 匹配失败 | INP 可能 CRLF 行尾，`^0.1, 3600., 1e-08, 2.5,$` 不匹配；改用无锚点 `s/0.1, 3600., 1e-08, 2.5,/0.01, 3600., 1e-12, 2.5,/` 并 grep 验证 |
+| sed 多行插入材料块易出错 | 放弃 `Na\...` + $'\n' 拼接；改用 split+append：sed -n 按行号切成 p1/p2 → `cat >> p1 << 'EOF'` 插入新块 → `cat p1 p2` 合并 → rm 临时文件 |
 | 泄漏导致裂缝不扩展 | 降低地层渗透率/Leakoff，或增大 Cflow（详见敏感性 sed 表） |
 | 弱化水平层后 t≈185s 整层同时软化发散 | 负特征值 200+/步且对 min inc/stabilize 鲁棒 = snap-through。新建 `*Section Controls, name=..., viscosity=0.5`：`sed -i '179347a\*Section Controls, name=VISCO_COH_H_WEAK, viscosity=0.5'` 行号插入定义，再用 material 名唯一定位 H 截面替换 controls（H 用 MAT_COHESIVE_HORIZONTAL_*，XZ 用 MAT_COHESIVE_XZ，sed 模式互不误伤） |
 | 登录节点无 abaqus 命令 | PATH 无 abaqus → 用 `$HOME/bin/abaqus2024 python` 调 ODB 分析，禁止裸 `abaqus python` |
 | 后台分析疑似未启动 | `ps aux | grep 脚本名` 确认存活；nohup 日志第一行应为 `== open`，60GB ODB 打开需 3~8 分钟 |
 | 提交时禁止 kill 其他任务 | 仅用户明确指定才终止 |
+
+## GitHub 托管与双端同步
+
+- 仓库: `https://github.com/Flyme-wang/tianhe-aba`（私有，独立仓库，含 SKILL.md + metadata.json + sync_instructions.md）
+- 本地: `C:\Users\Dell\.qoder\skills\tianhe-aba`（git 仓库，分支 main）
+- 推送: `cd C:\Users\Dell\.qoder\skills\tianhe-aba ; git add . ; git commit -m "..." ; git push origin main`（PowerShell 用 `;` 连接，禁止 `&&`）
+- 每日自动同步: schedule MCP 定时任务（daily 00:00 Asia/Shanghai, task id 6760f4f0-ff26-43e6-9b8e-a796e867ea6e）：pull → add → 有变更则 commit "auto sync $(Get-Date)" + push
+- 每次 SKILL.md 更新后主动 commit+push，勿等午夜定时任务（本地 harness 与远端立即一致）
+- gh repo create 报"仓库已存在" → 直接 `git init` + `git remote add origin <url>` + `git push -u origin main`，无需删除重建
+- metadata.json 字段: `"repo": "Flyme-wang/tianhe-aba"`, `"path": "SKILL.md"`, `"source_url": "https://github.com/Flyme-wang/tianhe-aba"`
