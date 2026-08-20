@@ -202,6 +202,15 @@ msg=..._${suf}.msg; grep -cE '\*\*\*ERROR|TOO MANY ATTEMPTS'  # 3. 错误扫描
 - 本地: `C:\Users\Dell\.qoder\skills\tianhe-aba`（git 仓库，分支 main）
 - 推送: `cd C:\Users\Dell\.qoder\skills\tianhe-aba ; git add . ; git commit -m "..." ; git push origin main`（PowerShell 用 `;` 连接，禁止 `&&`）
 - 每日自动同步: schedule MCP 定时任务（daily 00:00 Asia/Shanghai, task id 6760f4f0-ff26-43e6-9b8e-a796e867ea6e）：pull → add → 有变更则 commit "auto sync $(Get-Date)" + push
-- 每次 SKILL.md 更新后主动 commit+push，勿等午夜定时任务（本地 harness 与远端立即一致）
+- 每次 SKILL.md 更新后主动 commit+push，勿等午夜定时任务（本地 harness 与远端立即一致）；并在文末「更新日志」表追加一行（日期/提交/内容解释）
 - gh repo create 报"仓库已存在" → 直接 `git init` + `git remote add origin <url>` + `git push -u origin main`，无需删除重建
 - metadata.json 字段: `"repo": "Flyme-wang/tianhe-aba"`, `"path": "SKILL.md"`, `"source_url": "https://github.com/Flyme-wang/tianhe-aba"`
+
+## 更新日志（每次推送后追加一条）
+
+> 规范：每次 SKILL.md 更新并推送 GitHub 后，在本表追加一行（日期 / commit 前 7 位 / 本次新增内容的解释），保证本地 harness 与远端使用者都能追溯变更。
+
+| 日期 | 提交 | 更新内容与解释 |
+|---|---|---|
+| 2026-08-20 | 2ca9e61 | **全面补录本窗口调试经验**：①参数模板补充水平层 INP 结构——H_Z4/H_Z21 用独立材料 MAT_COHESIVE_HORIZONTAL_DIAG（参数同 XZ），全部内聚截面共用 VISCO_COH3D8P_REF(viscosity=0.05)，弱化水平层只动该材料/截面不误伤 XZ；②敏感性 sed 表新增水平层弱化完整模式（新建 WEAK 材料 QUADS ×0.2/BK ×0.1 + 替换 2 处截面引用）；③新增「水平层弱化实施流程」五步章节（探测→split+append 插入→改截面→grep 验证→提交观测）；④陷阱表新增 sed 多行插入改用 split+append；⑤新增「GitHub 托管与双端同步」章节（仓库/推送命令/午夜定时任务/gh 已存在处理/metadata 字段） |
+| 2026-08-20 | b0f770e | **hweak 系列调试经验**：①失败模式定位表新增 snap-through 诊断法——负特征值暴增（200+/步）且失败时刻对 min inc/stabilize 鲁棒 = 整层同时软化，非时间积分问题；②收敛修复矩阵新增 cohesive viscosity 参数（*Section Controls 0.05→0.5 仅弱化层截面，垂直缝保持 0.05）；③实验记录追加 hweak v1（弱化死 185s，22 负特征值/步）→v2（数值参数无效，负特征值暴涨 265/步）→v3（粘性正则化）三轮；④陷阱表新增弱化水平层 t≈185s 发散的修复操作（sed 行号插入 controls 定义 + material 名唯一定位截面） |
