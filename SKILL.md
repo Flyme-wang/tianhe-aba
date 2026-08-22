@@ -130,6 +130,65 @@ squeue -u apm_zcshen_5
 - 破裂判据: SDEG ≥ 0.99（QUADSCRT 被 cap 1.0 同理用 0.9999）
 - 参数化教训: 统计脚本必须接受命令行文件参数，勿硬编码模型名循环（曾因硬编码 C4/C1 导致新文件被忽略）
 
+## 天河无头三面 SDEG 截图（snap_sdeg_face.py 模式，2026-08 验证）
+
+在 60GB ODB 上做出版级 SDEG 破裂云图，按 cohesive 面分别截图（H_Z4/H_Z21 水平层 + XZ 垂直缝），colorbar 固定 0.01~1.0（过滤未破裂区干扰）。
+
+**运行方式**（环境变量传参，勿用 `--` 命令行参数——cae noGUI 下 sys.argv[1] 是 '-cae'）：
+
+```bash
+ODB=<job>.odb TAG=v4 OUTDIR=. OUTLOG=snap_v4_faces.log \
+nohup $HOME/bin/abaqus2024 cae noGUI=snap_sdeg_face.py > snap_v4_faces_cae.log 2>&1 &
+```
+
+**核心链路**（每步均为踩坑验证）：
+
+1. **必须 `abaqus cae noGUI`**（viewer noGUI 内核无 displayGroupOdbToolset 模块）
+2. **先 `from caeModules import *` 再 `import displayGroupOdbToolset as dgo`**（直接 import 失败）
+3. **print 不出 stdout** → 日志一律写文件（open + write + flush）
+4. **显示组构造必须用 `LeafFromElementLabels(partInstanceName, labels)`**：
+   - `LeafFromElementSets` 只查 assembly 级 elset（本模型 elsets 全在 instance 级 → 静默空 leaf → 3301 字节空白图）
+   - `LeafFromOdbElementLabels` 在本版本不存在（AttributeError）
+   - labels 从 ODB elset 读取并过滤类型 `if e.type.startswith('COH')`（UPPER 的 CELL_COH_CONT_* 混有非 cohesive 岩石单元，不过滤出灰色污染区）
+5. **多 instance 合并用 `displayGroup.add(leaf=...)`**（非 addLeaf；DisplayGroup 无 isEmpty 方法，勿判空）
+6. **replace 之后必须完整重做渲染序列**：`setPrimaryVariable(SDEG) → setFrame(step=int, frame=nf-1) → display.setValues(plotState=(CONTOURS_ON_DEF,))`，否则不出图
+7. **colorbar**：`contourOptions.setValues(minAutoCompute=False, maxAutoCompute=False, minValue=0.01, maxValue=1.0, numIntervals=9, intervalType=UNIFORM, outsideLimitsMode=SPECTRUM)`
+8. **图例 24pt**：`viewportAnnotationOptions.setValues(legendFont='-*-verdana-bold-r-normal-*-*-240-*-*-p-*-*-*')`（X11 字体格式；无 legendFontSize/legendFontBold 参数）
+9. **分辨率**：`vp.setValues(width=420, height=315)`（printToFile 无 size 参数）
+10. **正交视角**（PARALLEL 投影 + fitView）：水平层俯视 `cameraPosition=(200,200,800), cameraTarget=(200,200,3.95|20.95), cameraUpVector=(0,1,0)`；垂直缝侧视 `cameraPosition=(200,900,11), cameraTarget=(200,200,11), cameraUpVector=(0,0,1)`
+
+**单元数校验**（日志确认 leaf 大小）：H_Z4=2214、H_Z21=1640、XZ=924（M5 段 108 + M4 段 240 + UPPER 段 576）。
+
+**脚本**（本地 `scripts/snap_sdeg_face.py` 全量 + `scripts/run_snap_faces.sh` 批量）：
+
+```python
+# 关键骨架（完整版见 scripts/snap_sdeg_face.py）
+from caeModules import *          # 必须最先
+import displayGroupOdbToolset as dgo
+odb = openOdb(os.environ['ODB'], readOnly=True)
+def labels_leaf(inst_name, elsets):
+    labs = set()
+    for sn in elsets:
+        if sn in odb.rootAssembly.instances[inst_name].elementSets:
+            for e in odb.rootAssembly.instances[inst_name].elementSets[sn].elements:
+                if e.type.startswith('COH'):
+                    labs.add(e.label)
+    return dgo.LeafFromElementLabels(inst_name, tuple(sorted(labs)))
+# 每面: replace(leaves[0]) -> add(leaves[1:]) ->
+#   setPrimaryVariable(SDEG, INTEGRATION_POINT) -> setFrame -> plotState ->
+#   contourOptions -> view.setValues -> fitView -> printToFile
+```
+
+**批量模式**（run_snap_faces.sh，每模型一次会话截三面，约 8 分钟/模型）：
+
+```bash
+for pair in "hweak_v4:v4" "sens_c1_q2x:c1"; do
+  odb="${pair%%:*}"; tag="${pair##*:}"
+  ODB=..._${odb}.odb TAG=${tag} OUTDIR=. OUTLOG=snap_${tag}_faces.log \
+    $HOME/bin/abaqus2024 cae noGUI=snap_sdeg_face.py >> snap_faces_batch_cae.log 2>&1
+done
+```
+
 ## 运行状态检测与失败诊断（check_job_status2.sh 模式）
 
 一键脚本（每模型检查三处，全部一次完成）：
@@ -306,3 +365,4 @@ done
 | 2026-08-20 | 2ca9e61 | **全面补录本窗口调试经验**：①参数模板补充水平层 INP 结构——H_Z4/H_Z21 用独立材料 MAT_COHESIVE_HORIZONTAL_DIAG（参数同 XZ），全部内聚截面共用 VISCO_COH3D8P_REF(viscosity=0.05)，弱化水平层只动该材料/截面不误伤 XZ；②敏感性 sed 表新增水平层弱化完整模式（新建 WEAK 材料 QUADS ×0.2/BK ×0.1 + 替换 2 处截面引用）；③新增「水平层弱化实施流程」五步章节（探测→split+append 插入→改截面→grep 验证→提交观测）；④陷阱表新增 sed 多行插入改用 split+append；⑤新增「GitHub 托管与双端同步」章节（仓库/推送命令/午夜定时任务/gh 已存在处理/metadata 字段） |
 | 2026-08-20 | b0f770e | **hweak 系列调试经验**：①失败模式定位表新增 snap-through 诊断法——负特征值暴增（200+/步）且失败时刻对 min inc/stabilize 鲁棒 = 整层同时软化，非时间积分问题；②收敛修复矩阵新增 cohesive viscosity 参数（*Section Controls 0.05→0.5 仅弱化层截面，垂直缝保持 0.05）；③实验记录追加 hweak v1（弱化死 185s，22 负特征值/步）→v2（数值参数无效，负特征值暴涨 265/步）→v3（粘性正则化）三轮；④陷阱表新增弱化水平层 t≈185s 发散的修复操作（sed 行号插入 controls 定义 + material 名唯一定位截面） |
 | 2026-08-21 | f87d4a4 | **敏感性系列 C1~C6 与后处理体系**：①新增「INP part 归属与 section 行号地图」——RockMass_M4/M5/Upper 三 part 的缝段与水平层归属，30048/50838 相同文本行必须按行号 Python 精确修改；②新增「hweak_v4 成功数值配置」基准（vis0.2+stab0.001+allsdtol0.2）与注入点几何（9 点 x=160~240）；③新增「敏感性系列 C1~C6」结果表——C2（H_Z21 QUADS×0.5）实现双水平层破裂（230/30），物理结论：起裂强度=开关、BK 次级且反向、流量无效；④新增「SDEG 导出与几何分类统计」——dump_sdeg_param.py 4 列输出 + stat_sdeg_geom2.py 几何 z=3.95/20.95 分类（实例 label 分类不可靠）；⑤新增「监控自动接力」monitor 模式与「330 核跨节点 MPI」提交要点；⑥陷阱表补充 5 条（行号修改、几何分类、CRLF、BK×2 发散修复、核数确认） |
+| 2026-08-22 | (待填) | **天河无头三面 SDEG 截图体系**：①新增「天河无头三面 SDEG 截图」章节——cae noGUI + caeModules + LeafFromElementLabels 完整链路（含 10 条核心步骤：环境变量传参、文件日志、colorbar 0.01~1.0、24pt X11 legendFont、正交视角参数）；②关键 API 陷阱：LeafFromElementSets 只查 assembly 级 elset（instance 级静默空）、LeafFromOdbElementLabels 不存在、DisplayGroup 无 isEmpty/add 非 addLeaf、replace 后必须重做渲染序列、单元类型 COH 过滤防灰色污染；③附 scripts/snap_sdeg_face.py（三面截图）与 run_snap_faces.sh（批量）到 skill 仓库 |
