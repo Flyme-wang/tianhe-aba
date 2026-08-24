@@ -159,7 +159,9 @@ nohup $HOME/bin/abaqus2024 cae noGUI=snap_sdeg_face.py > snap_v4_faces_cae.log 2
 
 **单元数校验**（日志确认 leaf 大小）：H_Z4=2214、H_Z21=1640、XZ=924（M5 段 108 + M4 段 240 + UPPER 段 576）。
 
-**脚本**（本地 `scripts/snap_sdeg_face.py` 全量 + `scripts/run_snap_faces.sh` 批量）：
+**失败诊断（8-24 踩坑）**：`abaqus cae noGUI` 报 `TypeError: displayedObject; found Odb, expecting StubType, Part, ConstrainedSketch, Assembly, or XYPlot` = **脚本缺少 `from caeModules import *`**（viewport 处于 StubType 占位状态，不认识 Odb）。测试脚本只 `from abaqus import session` 时必现此错；完整 CAE 内核导入后 viewport 即接受 Odb。此报错**不代表** noGUI 不支持 ODB 渲染——勿误判转投 viewer/Xvfb/本地 CAE 弯路，先检查脚本头部导入。
+
+**脚本**（本地 `scripts/snap_sdeg_face.py` 全量 + `scripts/run_snap_faces.sh`/`scripts/run_snap_new5.sh` 批量）：
 
 ```python
 # 关键骨架（完整版见 scripts/snap_sdeg_face.py）
@@ -179,7 +181,7 @@ def labels_leaf(inst_name, elsets):
 #   contourOptions -> view.setValues -> fitView -> printToFile
 ```
 
-**批量模式**（run_snap_faces.sh，每模型一次会话截三面，约 8 分钟/模型）：
+**批量模式**（run_snap_faces.sh / run_snap_new5.sh，每模型一次会话截三面）：
 
 ```bash
 for pair in "hweak_v4:v4" "sens_c1_q2x:c1"; do
@@ -188,6 +190,13 @@ for pair in "hweak_v4:v4" "sens_c1_q2x:c1"; do
     $HOME/bin/abaqus2024 cae noGUI=snap_sdeg_face.py >> snap_faces_batch_cae.log 2>&1
 done
 ```
+
+**批量执行要点**（8-24 新目录 new-model-260822 验证）：
+1. Windows 上传的 .sh 必须 `sed -i "s/\r$//"` 清 CRLF + `chmod +x`，再 `nohup bash run_snap_new5.sh > snap_batch_run.log 2>&1 &`
+2. **耗时经验**：21GB ODB 首模型约 5 分钟，串行后续模型约 1 分钟/个（系统页缓存生效）——4 个模型串行批量总共仅约 3 分钟
+3. **完成后 md5sum 校验**：`md5sum snap_*_hz4.png snap_*_hz21.png snap_*_xz.png` 全部哈希互不相同 = 各模型独立渲染，防止重复图
+4. **批量日志核对**：`cat snap_batch_run.log` 应有 `=== start <tag> ... === done <tag>` 完整配对 + 末尾 `ALL NEW5 DONE`；face log 中 leaf 行（2214/1640/108/240/576）核对单元数
+5. 批量串行方式登录节点即可，无需 SLURM 作业（CAE noGUI 单核渲染）
 
 ## 运行状态检测与失败诊断（check_job_status2.sh 模式）
 
@@ -345,6 +354,9 @@ done
 | BK 断裂能加倍致发散（t=172s，孔压振荡负值） | 软化区延长→snap-through 增强；vis 0.2→0.3 + stab 0.001→0.003；仍失败则 BK 降 ×1.5 |
 | squeue %C 显示 64 核疑似超额 | 那是节点槽位数；实际核数看 slurm out 的 cores 行 |
 | 330 核排队时间过长 | 6 节点大资源申请易 PD；本模型 30 核单节点已足够，回退 threads |
+| cae noGUI 报 TypeError: displayedObject | 脚本缺 `from caeModules import *`（viewport 为 StubType）；勿误判为 noGUI 不支持 ODB，先检查脚本头部导入 |
+| Windows 上传 .sh 执行异常 | `sed -i "s/\r$//"` 清 CRLF + `chmod +x` 后 `nohup bash xxx.sh` 执行 |
+| 批量截图怀疑重复 | 完成后 `md5sum` 全部哈希互异 = 独立渲染；哈希相同则删除重跑该模型 |
 
 ## GitHub 托管与双端同步
 
@@ -366,3 +378,4 @@ done
 | 2026-08-20 | b0f770e | **hweak 系列调试经验**：①失败模式定位表新增 snap-through 诊断法——负特征值暴增（200+/步）且失败时刻对 min inc/stabilize 鲁棒 = 整层同时软化，非时间积分问题；②收敛修复矩阵新增 cohesive viscosity 参数（*Section Controls 0.05→0.5 仅弱化层截面，垂直缝保持 0.05）；③实验记录追加 hweak v1（弱化死 185s，22 负特征值/步）→v2（数值参数无效，负特征值暴涨 265/步）→v3（粘性正则化）三轮；④陷阱表新增弱化水平层 t≈185s 发散的修复操作（sed 行号插入 controls 定义 + material 名唯一定位截面） |
 | 2026-08-21 | f87d4a4 | **敏感性系列 C1~C6 与后处理体系**：①新增「INP part 归属与 section 行号地图」——RockMass_M4/M5/Upper 三 part 的缝段与水平层归属，30048/50838 相同文本行必须按行号 Python 精确修改；②新增「hweak_v4 成功数值配置」基准（vis0.2+stab0.001+allsdtol0.2）与注入点几何（9 点 x=160~240）；③新增「敏感性系列 C1~C6」结果表——C2（H_Z21 QUADS×0.5）实现双水平层破裂（230/30），物理结论：起裂强度=开关、BK 次级且反向、流量无效；④新增「SDEG 导出与几何分类统计」——dump_sdeg_param.py 4 列输出 + stat_sdeg_geom2.py 几何 z=3.95/20.95 分类（实例 label 分类不可靠）；⑤新增「监控自动接力」monitor 模式与「330 核跨节点 MPI」提交要点；⑥陷阱表补充 5 条（行号修改、几何分类、CRLF、BK×2 发散修复、核数确认） |
 | 2026-08-22 | 736b2c1 | **天河无头三面 SDEG 截图体系**：①新增「天河无头三面 SDEG 截图」章节——cae noGUI + caeModules + LeafFromElementLabels 完整链路（含 10 条核心步骤：环境变量传参、文件日志、colorbar 0.01~1.0、24pt X11 legendFont、正交视角参数）；②关键 API 陷阱：LeafFromElementSets 只查 assembly 级 elset（instance 级静默空）、LeafFromOdbElementLabels 不存在、DisplayGroup 无 isEmpty/add 非 addLeaf、replace 后必须重做渲染序列、单元类型 COH 过滤防灰色污染；③附 scripts/snap_sdeg_face.py（三面截图）与 run_snap_faces.sh（批量）到 skill 仓库 |
+| 2026-08-24 | 待提交 | **截图失败根因诊断与新目录批量验证**：①新增「失败诊断」——cae noGUI 报 TypeError: displayedObject 的根因是脚本缺 `from caeModules import *`（viewport 为 StubType），不代表 noGUI 不支持 ODB，勿误判转投 viewer/Xvfb/本地 CAE；②批量执行要点——Windows .sh 上传需 sed 清 CRLF+chmod、耗时经验（21GB 首模型约 5 分钟、串行后续约 1 分钟）、md5sum 哈希校验防重复图、日志配对核对；③陷阱表新增 3 条（TypeError 诊断、CRLF 清理、md5 校验）；④附 scripts/run_snap_new5.sh（新模型目录批量脚本）到 skill 仓库 |
