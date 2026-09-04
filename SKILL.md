@@ -320,6 +320,15 @@ done
 - flag 文件（touch flag_xxx_submitted）防重复提交；kill 监控进程不影响计算作业
 - 自动 dump 后等文件大小不再增长（stat -c %s 两次对比）再跑统计，避免读到半截文件
 
+## 已验证可用的 SLURM 分区（成功提交记录，2026-08 实证）
+
+| 分区 | 资源 | Abaqus 路径 | 验证作业 | 备注 |
+|---|---|---|---|---|
+| **com_u22（主力）** | 28 节点 × 64 核 = 1792 核，512 GB/节点 | `$HOME/bin/abaqus2024`（2024） | 7030598-7030601/7093179/7093542/7095785-7095789/7098882 系列/7101954 系列/7292498/new-model-260822 五模型 | 本账号绝大多数成功作业；30 核 threads 单节点常规提交，48h~120h |
+| **com_c76（备用）** | 单节点（曾用 30 核 mpi，24h） | `/APP/u22/x86_com/abaqus/Abaqus2020_HF6/abaqus`（2020） | 7089309（maxinc5 失败）/7089310（maxinc10 **成功**） | 来自用户模板 gen_submit_scripts.py；Abaqus 2020 ODB 缺 COORD 场输出 + Python 2（无 f-string），后处理须用 2024 `abaqus2024 upgrade` 升级格式 → **默认仍用 com_u22 + Abaqus 2024** |
+
+提交模板差异：com_u22 用 `run_abaqus2024.sh`（threads 模式，输出 slurm-<jobid>.out）；com_c76 用用户模板（`--nodes=1 --ntasks-per-node=30 --time=24:00:00`，mpi 模式，输出 job_<name>-<jobid>.out）。确认实际分区/核数看 slurm out 头两行与 `cores:` 行，勿信 squeue %C（显示节点槽位数）。
+
 ## 多核提交（30 核 threads / 330 核跨节点 MPI）
 
 - com_u22 分区: 28 节点 × 64 核 = 1792 核，512 GB/节点
@@ -379,3 +388,4 @@ done
 | 2026-08-21 | f87d4a4 | **敏感性系列 C1~C6 与后处理体系**：①新增「INP part 归属与 section 行号地图」——RockMass_M4/M5/Upper 三 part 的缝段与水平层归属，30048/50838 相同文本行必须按行号 Python 精确修改；②新增「hweak_v4 成功数值配置」基准（vis0.2+stab0.001+allsdtol0.2）与注入点几何（9 点 x=160~240）；③新增「敏感性系列 C1~C6」结果表——C2（H_Z21 QUADS×0.5）实现双水平层破裂（230/30），物理结论：起裂强度=开关、BK 次级且反向、流量无效；④新增「SDEG 导出与几何分类统计」——dump_sdeg_param.py 4 列输出 + stat_sdeg_geom2.py 几何 z=3.95/20.95 分类（实例 label 分类不可靠）；⑤新增「监控自动接力」monitor 模式与「330 核跨节点 MPI」提交要点；⑥陷阱表补充 5 条（行号修改、几何分类、CRLF、BK×2 发散修复、核数确认） |
 | 2026-08-22 | 736b2c1 | **天河无头三面 SDEG 截图体系**：①新增「天河无头三面 SDEG 截图」章节——cae noGUI + caeModules + LeafFromElementLabels 完整链路（含 10 条核心步骤：环境变量传参、文件日志、colorbar 0.01~1.0、24pt X11 legendFont、正交视角参数）；②关键 API 陷阱：LeafFromElementSets 只查 assembly 级 elset（instance 级静默空）、LeafFromOdbElementLabels 不存在、DisplayGroup 无 isEmpty/add 非 addLeaf、replace 后必须重做渲染序列、单元类型 COH 过滤防灰色污染；③附 scripts/snap_sdeg_face.py（三面截图）与 run_snap_faces.sh（批量）到 skill 仓库 |
 | 2026-08-24 | ddb95b5 | **截图失败根因诊断与新目录批量验证**：①新增「失败诊断」——cae noGUI 报 TypeError: displayedObject 的根因是脚本缺 `from caeModules import *`（viewport 为 StubType），不代表 noGUI 不支持 ODB，勿误判转投 viewer/Xvfb/本地 CAE；②批量执行要点——Windows .sh 上传需 sed 清 CRLF+chmod、耗时经验（21GB 首模型约 5 分钟、串行后续约 1 分钟）、md5sum 哈希校验防重复图、日志配对核对；③陷阱表新增 3 条（TypeError 诊断、CRLF 清理、md5 校验）；④附 scripts/run_snap_new5.sh（新模型目录批量脚本）到 skill 仓库 |
+| 2026-09-04 | （待补） | **新增「已验证可用的 SLURM 分区」章节**：①com_u22（主力，Abaqus 2024 `$HOME/bin/abaqus2024`，28×64 核，列全部验证作业号）；②com_c76（备用，Abaqus 2020 `/APP/u22/x86_com/abaqus/Abaqus2020_HF6/abaqus`，用户模板 gen_submit_scripts.py，7089309/7089310 实证）；③两模板差异（threads vs mpi、输出文件名）+ 2020 ODB 缺 COORD/升级教训；④默认提交组合 = com_u22 + Abaqus 2024 |
