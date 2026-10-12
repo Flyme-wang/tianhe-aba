@@ -14,18 +14,49 @@ Submit Abaqus 2024 `.inp` jobs to the Tianhe supercomputer and monitor them thro
 - **Working partition**: `com_u22` (Ubuntu 22.04, 64 cores/node, ~28 idle nodes). License `27000@12.8.3.194` IS reachable from com_u22.
 - **Unusable partitions**: `com_c76` (CentOS 7, glibc 2.28 wall blocks Abaqus 2024), `com_u22_8458` (nodes DOWN/DRAIN), mars/deimos/e9/phobos (FLEXnet protocol unreachable).
 - **Install root**: `~/HDD_POOL/SIMULIA/EstProducts/2024` (official Abaqus 2024).
-- **Launcher wrapper**: `~/bin/abaqus2024` (sets `LD_LIBRARY_PATH=~/HDD_POOL/abaqus2024_libs`, `LIBGL_ALWAYS_INDIRECT=1`, execs the real `abaqus`).
+- **Launcher wrapper**: `~/bin/abaqus2024` (sets `LD_LIBRARY_PATH=~/HDD_POOL/abaqus2024_libs`, `LIBGL_ALWAYS_INDIRECT=1`, execs the real `abaqus`). **Always submit through this wrapper** — it is the Abaqus 2024 install, not the system default Abaqus 2017.
 - **Env file**: `~/abaqus_v6.env` (pure ASCII; builds `mp_host_list` from `SLURM_NODELIST`; license `abaquslm_license_file = "27000@12.8.3.194"`).
 - **SSH flakiness is routine** ("banner exchange ... timed out"). Retry a few times; prefer uploading script files over long inline commands.
+
+### 🔴 PUT JOBS IN `~/HDD_POOL/`, NEVER IN `~/abaqus/`
+
+Measured 2026-10-12: the home-directory filesystem `/XYFS01` has a **user quota that is
+essentially exhausted**.
+
+| Path | Filesystem | Measured behaviour |
+|---|---|---|
+| `~/abaqus/` | `/XYFS01` | ❌ **writes truncate at ~8.4 MB** (`dd` of 50 MB produced only 8,368,128 B) |
+| `~/HDD_POOL/` | `/XYFS02` (11 PB, 30 % used) | ✅ 50 MB writes complete |
+
+Consequence: `scp` to `~/abaqus/...` fails with `write remote "...": Failure` after copying
+only part of the file (a 19.6 MB inp transferred just 2.1 MB). **Always verify the remote
+byte count and md5 after uploading**, and put the job under `~/HDD_POOL/<JOBNAME>/`.
+
+```bash
+ssh tianhe "mkdir -p ~/HDD_POOL/$JOB"
+scp model.inp tianhe:~/HDD_POOL/$JOB/
+ssh tianhe "stat -c %s ~/HDD_POOL/$JOB/model.inp; md5sum ~/HDD_POOL/$JOB/model.inp"
+```
+
+### Script files must have LF endings
+
+PowerShell writes CRLF by default, which makes the remote bash fail with
+`$'echo\r': command not found` and silently corrupts multi-line commands and SLURM scripts.
+
+```powershell
+[IO.File]::WriteAllText($path, ($sh -replace "`r`n", "`n"))   # then check CR count == 0
+```
 
 ## Workflow: submit a job
 
 ### Step 1 — Ensure the inp is on the login node
 
-Upload from the local machine (inp keeps its folder on the cluster):
+Upload into **`~/HDD_POOL/<JOBNAME>/`** (never `~/abaqus/` — the home quota truncates writes):
 
 ```bash
-scp model.inp tianhe:~/abaqus/abaqus2024-try/
+ssh tianhe "mkdir -p ~/HDD_POOL/abaqus2024-try"
+scp model.inp tianhe:~/HDD_POOL/abaqus2024-try/
+ssh tianhe "stat -c %s ~/HDD_POOL/abaqus2024-try/model.inp"   # must match the local size
 ```
 
 ### Step 2 — Submit via SLURM
@@ -33,23 +64,28 @@ scp model.inp tianhe:~/abaqus/abaqus2024-try/
 Run the production script `run_abaqus2024.sh` (it `cd`s into the inp folder, writes a local `./abaqus_v6.env` with the cluster license, and runs with `interactive` so the solver stays in the foreground):
 
 ```bash
-ssh tianhe "cd ~/abaqus/abaqus2024-try && sbatch run_abaqus2024.sh model.inp"
+ssh tianhe "cd ~/HDD_POOL/abaqus2024-try && sbatch run_abaqus2024.sh model.inp"
 ```
 
-The script lives at `~/abaqus/abaqus2024-try/run_abaqus2024.sh` and is also bundled in `scripts/`. Key settings: `--partition=com_u22`, `--ntasks-per-node=32`, `--time=48:00:00`, outputs `slurm-%j.out`/`slurm-%j.err` in the job folder.
+The script lives at `~/HDD_POOL/abaqus2024-try/run_abaqus2024.sh` and is also bundled in `scripts/`. Key settings: `--partition=com_u22`, `--ntasks-per-node=32`, `--time=48:00:00`, outputs `slurm-%j.out`/`slurm-%j.err` in the job folder.
+
+**Choose the core count** via `--ntasks-per-node=N` together with `NCORES=${SLURM_NTASKS:-32}`
+and `cpus=$NCORES`. `com_u22` nodes have 64 cores, so any N ≤ 64 fits on one node. The job
+submits through `$HOME/bin/abaqus2024` (Abaqus 2024) — confirm `Abaqus 2024` appears in
+`slurm-<jobid>.out` and that the license is checked out from `12.8.3.194`.
 
 ### Step 3 — Monitor
 
 ```bash
-ssh tianhe "squeue -j <JOBID>; tail -30 ~/abaqus/abaqus2024-try/<jobname>.sta"
+ssh tianhe "squeue -j <JOBID>; tail -30 ~/HDD_POOL/abaqus2024-try/<jobname>.sta"
 ```
 
-The `.sta` file shows increment progress. `.msg` shows solver messages; `.dat` the printed output. All outputs are written **in the inp folder** (`~/abaqus/abaqus2024-try/`).
+The `.sta` file shows increment progress. `.msg` shows solver messages; `.dat` the printed output. All outputs are written **in the inp folder** (`~/HDD_POOL/abaqus2024-try/`).
 
 ### Step 4 — Collect results
 
 ```bash
-scp -r tianhe:~/abaqus/abaqus2024-try/<jobname>.odb .
+scp -r tianhe:~/HDD_POOL/abaqus2024-try/<jobname>.odb .
 ```
 
 ## The production submission script
@@ -161,6 +197,10 @@ sbatch scripts/fortran/umat_slurm_test.sh   # or add user=your.f to run_abaqus20
 | `Abaqus user subroutine library could not be found` | `libstandardU_static.a` missing | Copy from 2020 `linux_a64/code/lib/` |
 | `libstandardU.so: failed to map segment` | interactive run, no PMPI init | Run through SLURM only |
 | SSH banner exchange timeout | Routine cluster flakiness | Retry a few times |
+| `scp: write remote "...": Failure`, file truncated (e.g. 19.6 MB → 2.1 MB) | Home filesystem `/XYFS01` user quota exhausted | **Move the job to `~/HDD_POOL/`** (`/XYFS02`, 11 PB). See the 🔴 section above |
+| `dd` / write stops at ~8.4 MB | Same quota | Same fix |
+| `$'echo\r': command not found`, `head: invalid trailing option` | CRLF line endings in a script written by PowerShell | Rewrite with LF: `[IO.File]::WriteAllText($p, ($s -replace "`r`n","`n"))` |
+| Job runs but is the wrong version (2017 not 2024) | Submitted via bare `abaqus` | Always use `$HOME/bin/abaqus2024` |
 
 ## Quick validation
 
